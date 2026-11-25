@@ -6,10 +6,10 @@
         "mac": "2.2091",
         "ios": "2.2091"
     },
-    "id": "user.level-downloads",
+    "id": "gamerskav3.level-downloads",
     "name": "Level Downloads",
     "version": "v1.0.0",
-    "developer": "user",
+    "developer": "gamerskav3",
     "description": "Download levels with their comments and play them offline.",
     "resources": {
         "sprites": [
