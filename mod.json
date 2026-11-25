@@ -1,23 +1,16 @@
 {
-    "geode": "6.0.0",
+    "geode": "6.0.0-beta.2",
     "gd": {
         "win": "2.2091",
         "android": "2.2091",
         "mac": "2.2091",
         "ios": "2.2091"
     },
-    "id": "gamerskav3.level-downloads",
+    "id": "user.level-downloads",
     "name": "Level Downloads",
     "version": "v1.0.0",
-    "developer": "gamerskav3",
-    "description": "Download levels with 40 of their comments 20 is recent and 20 is top and play the level offline.",
-    "dependencies": [
-        {
-            "id": "geode.node-ids",
-            "version": ">=1.14.0",
-            "importance": "required"
-        }
-    ],
+    "developer": "user",
+    "description": "Download levels with their comments and play them offline.",
     "resources": {
         "sprites": [
             "resources/*.png"
