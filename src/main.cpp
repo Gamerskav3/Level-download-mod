@@ -10,6 +10,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/Notification.hpp>
 #include <algorithm>
+#include <vector>
 #include <ctime>
 #include <memory>
 
@@ -712,9 +713,33 @@ class $modify(DLCreatorLayer, CreatorLayer) {
     bool init() {
         if (!CreatorLayer::init()) return false;
 
-        CCMenu* menu = typeinfo_cast<CCMenu*>(this->getChildByID("creator-buttons-menu"));
-        if (!menu) menu = this->getChildByType<CCMenu>(0);
-        if (!menu) return true;
+        // find the menu that holds the creator buttons (the one with the most buttons) - no node ids needed
+        CCMenu* menu = nullptr;
+        int bestCount = 0;
+        for (auto child : CCArrayExt<CCNode*>(this->getChildren())) {
+            auto m = typeinfo_cast<CCMenu*>(child);
+            if (!m || !m->getChildren()) continue;
+            int count = 0;
+            for (auto it : CCArrayExt<CCNode*>(m->getChildren())) {
+                if (typeinfo_cast<CCMenuItemSpriteExtra*>(it)) count++;
+            }
+            if (count > bestCount) { bestCount = count; menu = m; }
+        }
+        if (!menu || bestCount < 8) return true;
+
+        // top row of buttons: Create, Saved, Scores, Quests, Versus
+        float maxY = -1e9f;
+        std::vector<CCNode*> items;
+        for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
+            if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
+            items.push_back(it);
+            maxY = std::max(maxY, it->getPositionY());
+        }
+        std::vector<CCNode*> row;
+        for (auto it : items) {
+            if (it->getPositionY() > maxY - 5.f) row.push_back(it);
+        }
+        std::sort(row.begin(), row.end(), [](CCNode* a, CCNode* b) { return a->getPositionX() < b->getPositionX(); });
 
         auto spr = makeCategoryButtonSprite();
         auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DLCreatorLayer::onLevelDownloads));
@@ -727,36 +752,31 @@ class $modify(DLCreatorLayer, CreatorLayer) {
         dlMenu->ignoreAnchorPointForPosition(menu->isIgnoreAnchorPointForPosition());
         dlMenu->setContentSize(menu->getContentSize());
         dlMenu->setPosition(menu->getPosition());
-        dlMenu->setZOrder(menu->getZOrder());
 
-        CCNode* create = menu->getChildByID("create-button");
-        CCNode* saved = menu->getChildByID("saved-button");
-        CCNode* scores = menu->getChildByID("scores-button");
-        CCNode* quests = menu->getChildByID("quests-button");
-        CCNode* versus = menu->getChildByID("versus-button");
-
-        if (create && saved && scores && quests && versus) {
+        if (row.size() >= 4) {
             // same size as the game's buttons
-            float h = create->getContentHeight() * create->getScaleY();
+            float h = row[0]->getContentHeight() * row[0]->getScaleY();
             float base = btn->getContentHeight();
             if (base > 0.f) btn->setScale(h / base);
 
-            float step = saved->getPositionX() - create->getPositionX();
-            float cx = (create->getPositionX() + versus->getPositionX()) / 2.f;
-            float y = create->getPositionY();
-            CCNode* row[6] = {create, nullptr, saved, scores, quests, versus};
-            for (int i = 0; i < 6; ++i) {
-                float x = cx + (static_cast<float>(i) - 2.5f) * step;
-                if (row[i]) row[i]->setPositionX(x);
-                else btn->setPosition({x, y});
+            size_t n = row.size();
+            float step = row[1]->getPositionX() - row[0]->getPositionX();
+            float cx = (row.front()->getPositionX() + row.back()->getPositionX()) / 2.f;
+            float y = row[0]->getPositionY();
+            // new order: Create, Level Downloads, Saved, Scores, ...
+            for (size_t i = 0; i <= n; ++i) {
+                float x = cx + (static_cast<float>(i) - static_cast<float>(n) / 2.f) * step;
+                if (i == 1) btn->setPosition({x, y});
+                else row[i == 0 ? 0 : i - 1]->setPositionX(x);
             }
             dlMenu->addChild(btn);
             this->addChild(dlMenu, menu->getZOrder() + 1);
         } else {
-            // no node ids available: put it in the bottom right corner
+            // could not find the row: put it in the bottom right corner
             auto ws = CCDirector::get()->getWinSize();
             dlMenu->setContentSize(ws);
             dlMenu->setAnchorPoint({0, 0});
+            dlMenu->ignoreAnchorPointForPosition(false);
             dlMenu->setPosition({0, 0});
             btn->setScale(0.7f);
             btn->setPosition({ws.width - 60.f, 60.f});
@@ -774,6 +794,29 @@ class $modify(DLCreatorLayer, CreatorLayer) {
 // ---------------------------------------------------------------------------
 // Level page: download button under like/dislike
 // ---------------------------------------------------------------------------
+// the column of round buttons on the right side of the level page (found without node ids)
+static CCMenu* findRightMenu(CCNode* layer) {
+    auto ws = CCDirector::get()->getWinSize();
+    CCMenu* best = nullptr;
+    int bestCount = 0;
+    for (auto child : CCArrayExt<CCNode*>(layer->getChildren())) {
+        auto menu = typeinfo_cast<CCMenu*>(child);
+        if (!menu || !menu->getChildren()) continue;
+        int count = 0;
+        float sumX = 0.f;
+        for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
+            if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
+            sumX += menu->convertToWorldSpace(it->getPosition()).x;
+            count++;
+        }
+        if (count >= 4 && sumX / count > ws.width * 0.75f && count > bestCount) {
+            best = menu;
+            bestCount = count;
+        }
+    }
+    return best;
+}
+
 class $modify(DLLevelInfoLayer, LevelInfoLayer) {
     bool init(GJGameLevel* level, bool challenge) {
         if (!LevelInfoLayer::init(level, challenge)) return false;
@@ -781,14 +824,36 @@ class $modify(DLLevelInfoLayer, LevelInfoLayer) {
         bool offline = level && level->getUserObject("offline"_spr);
         g_offlineLevelID = offline ? I(level->m_levelID) : 0;
 
-        auto menu = this->getChildByID("right-side-menu");
+        auto menu = findRightMenu(this);
         if (!menu) return true;
         auto spr = makeCircleButtonSprite();
         if (!spr) return true;
         auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DLLevelInfoLayer::onDownloadLevel));
         btn->setID("download-level-button"_spr);
-        menu->addChild(btn);
-        menu->updateLayout();
+
+        if (menu->getLayout()) {
+            // the menu is laid out automatically: add at the end (= under like/dislike)
+            menu->addChild(btn);
+            menu->updateLayout();
+        } else {
+            // place it under the lowest button, with the same spacing
+            CCNode* low = nullptr;
+            for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
+                if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
+                if (!low || it->getPositionY() < low->getPositionY()) low = it;
+            }
+            CCNode* prev = nullptr;
+            for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
+                if (it == low || !typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
+                if (!prev || it->getPositionY() < prev->getPositionY()) prev = it;
+            }
+            float step = prev ? prev->getPositionY() - low->getPositionY() : 55.f;
+            if (step < 20.f) step = 55.f;
+            float lowH = low->getContentHeight() * low->getScaleY();
+            if (btn->getContentHeight() > 0.f && lowH > 0.f) btn->setScale(lowH / btn->getContentHeight());
+            btn->setPosition({low->getPositionX(), low->getPositionY() - step});
+            menu->addChild(btn);
+        }
         return true;
     }
 
