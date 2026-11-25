@@ -10,6 +10,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/Notification.hpp>
 #include <algorithm>
+#include <filesystem>
 #include <vector>
 #include <ctime>
 #include <memory>
@@ -270,12 +271,13 @@ static std::string safeFileName(std::string name, int id) {
 }
 
 static void removeFile(std::string const& p) {
-#if DL_GEODE6
-    (void)asp::fs::remove(asp::fs::Path(p));
-#else
+    // plain std::filesystem on both Geode versions (asp::fs has no remove in newer v6 builds)
+    // the string is UTF-8, so build the path from a u8string
     std::error_code ec;
-    std::filesystem::remove(std::filesystem::path(p), ec);
-#endif
+    std::filesystem::remove(
+        std::filesystem::path(std::u8string(reinterpret_cast<char8_t const*>(p.data()), p.size())),
+        ec
+    );
 }
 
 static std::vector<DLLevel> loadAllLevels() {
