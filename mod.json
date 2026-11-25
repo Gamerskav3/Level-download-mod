@@ -6,10 +6,10 @@
         "mac": "2.2081",
         "ios": "2.2081"
     },
-    "id": "user.level-downloads",
+    "id": "gamerskav3.level-downloads",
     "name": "Level Downloads",
     "version": "v1.0.0",
-    "developer": "user",
+    "developer": "gamerskav3",
     "description": "Download levels with 40 of their comments 20 is recent and 20 is top and play the level offline.",
     "dependencies": [
         {
