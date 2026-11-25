@@ -1,23 +1,12 @@
-# Template
-This is where she makes a mod.
+# Level Downloads (GD 2.2081)
 
-<img src="logo.png" width="150" alt="the mod's logo" />
+Built for Geometry Dash 2.2081 with Geode 5.11.2.
 
-*Update logo.png to change your mod's icon (please)*
+## Build
 
-## Getting started
-We recommend heading over to [the getting started section on our docs](https://docs.geode-sdk.org/getting-started/) for useful info on what to do next.
+1. Create a new GitHub repository and upload everything in this folder (keep the `.github` folder).
+2. Open the **Actions** tab and run **Build Geode Mod** (it also runs on every push).
+3. Download the **Build Output** artifact: it contains the `.geode` file for Windows, macOS, Android 32/64 and iOS.
+4. Put the `.geode` file in your Geode `mods` folder.
 
-## Build instructions
-For more info, see [our docs](https://docs.geode-sdk.org/getting-started/create-mod#build)
-```sh
-# Assuming you have the Geode CLI set up already
-geode build
-```
-
-# Resources
-* [Geode SDK Documentation](https://docs.geode-sdk.org/)
-* [Geode SDK Source Code](https://github.com/geode-sdk/geode/)
-* [Geode CLI](https://github.com/geode-sdk/cli)
-* [Bindings](https://github.com/geode-sdk/bindings/)
-* [Dev Tools](https://github.com/geode-sdk/DevTools)
+Edit `developer` and `id` in `mod.json` if you want your own name on it.
