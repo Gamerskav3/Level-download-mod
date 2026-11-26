@@ -1,11 +1,14 @@
-# Level Downloads (GD 2.209x)
+# Level Downloads
 
-Built for Geometry Dash 2.2091 with Geode 6.0.0.
+Want to keep a level for later, even when you have no internet? This Geode mod lets you download any level and play it offline whenever you like.
 
-## Build
+Made for Geometry Dash 2.209x with Geode 6.0.0.
 
-1. Create a new GitHub repository and upload everything in this folder (keep the `.github` folder).
-2. Open the **Actions** tab and run **Build Geode Mod** (it also runs on every push).
-3. Download the **Build Output** artifact: it contains the `.geode` file for Windows, macOS, Android 32/64 and iOS.
-4. Put the `.geode` file in your Geode `mods` folder.
+## What it does
 
+- Adds a **Level Downloads** button to the Creator menu, right next to Create.
+- Adds a download button next to refresh on every level page. Press it and the level gets saved with its 20 newest and 20 top comments.
+- Once a level is saved, the button turns into a gray badge so you know you already have it.
+- Gives you your own **Downloaded Levels** screen. Levels open offline with no redownload, comments included, and the trash button deletes them.
+
+Saved levels are `<level name>.gmd` files in the mod's config folder.
