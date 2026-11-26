@@ -1,11 +1,12 @@
-// Level Downloads - Geode mod
-// - "Level Downloads" button in the Creator menu (next to Create)
-// - download button on every level page (under like/dislike)
-// - custom "Downloaded Levels" screen (offline levels + offline comments)
+// Level Downloads - a Geode mod for Geometry Dash
+// Adds a "Level Downloads" button to the Creator menu, right next to Create.
+// Every level page gets a download button next to refresh. It saves the level and its comments.
+// Saved levels show up in the "Downloaded Levels" screen and open offline, comments included.
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CreatorLayer.hpp>
 #include <Geode/modify/LevelInfoLayer.hpp>
 #include <Geode/modify/LevelCell.hpp>
+#include <Geode/modify/CommentCell.hpp>
 #include <Geode/modify/GameLevelManager.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/Notification.hpp>
@@ -19,7 +20,7 @@
 using namespace geode::prelude;
 
 // ---------------------------------------------------------------------------
-// small helpers that behave the same on Geode 5 (gd::string) and Geode 6 (std::string)
+// Tiny helpers. Geode 5 uses gd::string and Geode 6 uses std::string, these hide the difference.
 // ---------------------------------------------------------------------------
 template <class T>
 static std::string S(T const& s) { return std::string(s.c_str()); }
@@ -41,7 +42,7 @@ static bool endsWith(std::string const& s, std::string const& suf) {
 }
 
 // ---------------------------------------------------------------------------
-// data model
+// the stuff we keep about a level and its comments
 // ---------------------------------------------------------------------------
 struct DLComment {
     std::string user;
@@ -59,16 +60,16 @@ struct DLLevel {
     bool autoLevel = false;
     long long savedAt = 0;
     std::vector<DLComment> recent, top;
-    std::string path; // full path of the .gmd file (only set when loaded from disk)
+    std::string path; // where the .gmd file lives (only filled in when we read it from disk)
 };
 
 // ---------------------------------------------------------------------------
-// file format
-//   {<recent comments>#<top comments>}#<gmd text>#
-//   each comment:  'username>"comment text"'   (comments separated by ", ")
-//   inside a comment  \  '  #  }  and line breaks are escaped with a backslash
+// how the .gmd files look
+//   {<recent comments> : <top comments> }#<gmd text>#
+//   one comment is 'LIKES" 'USERNAME>"COMMENT TEXT" ' and they are joined with ",  "
+//   a backslash goes in front of \ ' and > (line breaks turn into \n) so reading it back never breaks
 // ---------------------------------------------------------------------------
-// escapes: \ and ' always, line breaks as \n \r, and > in user names
+// puts a backslash in front of the characters that would break the format
 static std::string escWith(std::string const& s, bool escGt) {
     std::string o;
     for (char c : s) {
@@ -88,7 +89,7 @@ static char unescChar(char e) {
     return e == 'n' ? '\n' : e == 'r' ? '\r' : e;
 }
 
-// one comment:  'LIKES" 'USERNAME>"COMMENT TEXT" '      comments are separated by ",  "
+// one comment looks like  'LIKES" 'USERNAME>"COMMENT TEXT" '  and they are joined with ",  "
 static std::string fmtComments(std::vector<DLComment> const& v) {
     std::string o;
     for (size_t i = 0; i < v.size(); ++i) {
@@ -214,12 +215,12 @@ static bool parseGmd(std::string const& g, DLLevel& l) {
     return !l.levelString.empty();
 }
 
-// file:  {<recent comments> : <top comments> }#<gmd text>#
+// the whole file: comments first, then the level itself
 static std::string buildFile(DLLevel const& l) {
     return "{" + fmtComments(l.recent) + " : " + fmtComments(l.top) + " }#" + buildGmd(l) + "#";
 }
 
-// old format: {<recent>#<top>}#<gmd text>#  with 'user>"text"' comments (still readable)
+// the first version of the format, still supported so old downloads keep working
 static bool parseFileOld(std::string const& data, DLLevel& out) {
     if (data.empty() || data[0] != '{') return false;
     size_t i = 1;
@@ -251,7 +252,7 @@ static bool parseFileOld(std::string const& data, DLLevel& out) {
                 list.push_back(std::move(cm));
                 continue;
             }
-            i++; // separators
+            i++; // skip commas and spaces
         }
         return false;
     };
@@ -298,7 +299,7 @@ static bool parseCommentList(std::string const& d, size_t& i, std::vector<DLComm
             continue;
         }
         if (c == ':' || c == '}') return true;
-        i++; // separators: commas and spaces
+        i++; // skip commas and spaces
     }
     return false;
 }
@@ -327,7 +328,7 @@ static bool parseFile(std::string const& data, DLLevel& out) {
 }
 
 // ---------------------------------------------------------------------------
-// storage (mod config folder, one <level name>.gmd per level)
+// saving and loading (one <level name>.gmd per level in the mod's config folder)
 // ---------------------------------------------------------------------------
 static std::string safeFileName(std::string name, int id) {
     for (auto& c : name) {
@@ -341,8 +342,8 @@ static std::string safeFileName(std::string name, int id) {
 }
 
 static void removeFile(std::string const& p) {
-    // plain std::filesystem on both Geode versions (asp::fs has no remove in newer v6 builds)
-    // the string is UTF-8, so build the path from a u8string
+    // plain std::filesystem, it works on both Geode versions (asp::fs has no remove in newer v6 builds)
+    // the path comes in as UTF-8, so go through a u8string
     std::error_code ec;
     std::filesystem::remove(
         std::filesystem::path(std::u8string(reinterpret_cast<char8_t const*>(p.data()), p.size())),
@@ -379,7 +380,7 @@ static bool loadLevelById(int id, DLLevel& out) {
     return false;
 }
 
-// small index of downloaded level ids (index.txt) so the level page does not need to read every file
+// index.txt keeps a list of downloaded ids, so the level page can check quickly without reading every file
 static void writeIdIndex();
 
 static std::set<int>& idIndex() {
@@ -421,7 +422,7 @@ static Result<> saveLevelToDisk(DLLevel& l) {
     std::string base = safeFileName(l.name, l.id);
     std::string fname = base + ".gmd";
     for (auto& o : all) {
-        // another level already uses this file name -> add the id
+        // someone else already has this file name, so add the id to ours
         if (o.id != l.id && endsWith(o.path, "/" + fname)) {
             fname = fmt::format("{} ({}).gmd", base, l.id);
             break;
@@ -429,7 +430,7 @@ static Result<> saveLevelToDisk(DLLevel& l) {
     }
     auto target = dir / fname;
     auto targetStr = pathStr(target);
-    // level was renamed -> drop the old file
+    // the level got renamed, so delete the old file
     for (auto& o : all) {
         if (o.id == l.id && o.path != targetStr) removeFile(o.path);
     }
@@ -450,7 +451,7 @@ static void deleteLevelFromDisk(int id) {
 }
 
 // ---------------------------------------------------------------------------
-// GJGameLevel <-> DLLevel
+// turning a game level into our data and back
 // ---------------------------------------------------------------------------
 static DLLevel snapshotLevel(GJGameLevel* l) {
     DLLevel d;
@@ -512,9 +513,9 @@ static GJGameLevel* makeLevel(DLLevel const& d) {
 }
 
 // ---------------------------------------------------------------------------
-// offline comment viewing
+// offline comments
 // ---------------------------------------------------------------------------
-static int g_offlineLevelID = 0; // level currently opened from the Downloaded Levels screen
+static int g_offlineLevelID = 0; // the level that was opened from the Downloaded Levels screen (0 = none)
 
 static GJComment* makeComment(DLComment const& c, int levelID, int index) {
     auto g = GJComment::create();
@@ -524,9 +525,16 @@ static GJComment* makeComment(DLComment const& c, int levelID, int index) {
     g->m_levelID = levelID;
     g->m_likeCount = c.likes;
     g->m_hasLevelID = true;
+    g->m_color = ccc3(255, 255, 255);
+    g->m_uploadDate = "saved";
     auto score = GJUserScore::create();
     if (score) {
         score->m_userName = c.user;
+        score->m_iconID = 1;
+        score->m_playerCube = 1;
+        score->m_color1 = 0;
+        score->m_color2 = 3;
+        score->m_iconType = IconType::Cube;
         g->m_userScore = score;
         score->retain();
     }
@@ -538,7 +546,7 @@ class $modify(DLGameLevelManager, GameLevelManager) {
         if (g_offlineLevelID != 0 && ID == g_offlineLevelID && keytype == CommentKeyType::Level && this->m_levelCommentDelegate) {
             DLLevel dl;
             if (loadLevelById(ID, dl)) {
-                // mode 0 = recent, mode 1 = top
+                // mode 0 is recent comments, 1 is top
                 auto& src = (mode == 0) ? dl.recent : dl.top;
                 auto arr = CCArray::create();
                 size_t start = static_cast<size_t>(std::max(page, 0)) * static_cast<size_t>(std::max(total, 1));
@@ -561,7 +569,7 @@ class $modify(DLGameLevelManager, GameLevelManager) {
 };
 
 // ---------------------------------------------------------------------------
-// downloading: level + 20 recent + 20 top comments
+// downloading the level plus 20 recent and 20 top comments
 // ---------------------------------------------------------------------------
 static std::string commentUser(GJComment* c) {
     std::string u = S(c->m_userName);
@@ -591,7 +599,7 @@ public:
         return c;
     }
 
-    // pages of 10 until there are 20 comments in the list
+    // the game gives pages of 10, so keep asking for pages until we have 20
     void request() {
         auto glm = GameLevelManager::get();
         glm->m_levelCommentDelegate = this;
@@ -708,7 +716,7 @@ static CCNode* makeCircleButtonSprite() {
     return base;
 }
 
-// gray, not pressable "already downloaded" badge
+// the gray badge that shows a level is already downloaded (it can't be pressed)
 static CCNode* makeBadgeSprite() {
     CCSprite* base = frameSprite("geode.loader/baseCircle_Large_Gray.png");
     if (!base) base = frameSprite("GJ_button_06.png");
@@ -728,7 +736,7 @@ static CCNode* makeBadgeSprite() {
 }
 
 // ---------------------------------------------------------------------------
-// Downloaded Levels screen
+// the Downloaded Levels screen
 // ---------------------------------------------------------------------------
 class DownloadedLevelsLayer : public CCLayer {
 public:
@@ -824,7 +832,7 @@ public:
 };
 DownloadedLevelsLayer* DownloadedLevelsLayer::instance = nullptr;
 
-// open a downloaded level (also from the level cell tap): make the game treat it as downloaded
+// opening a downloaded level: tell the game it is already downloaded so it does not download it again
 class $modify(DLLevelCell, LevelCell) {
     void loadFromLevel(GJGameLevel* level) {
         LevelCell::loadFromLevel(level);
@@ -868,14 +876,45 @@ class $modify(DLLevelCell, LevelCell) {
     }
 };
 
+// the game sometimes does not draw the username on our offline comments, so add it ourselves if it is missing
+static bool hasLabelText(CCNode* node, std::string const& text) {
+    if (!node || !node->getChildren()) return false;
+    for (auto child : CCArrayExt<CCNode*>(node->getChildren())) {
+        if (auto label = typeinfo_cast<CCLabelBMFont*>(child)) {
+            std::string str = label->getString();
+            if (!str.empty() && (str == text || str.find(text) != std::string::npos)) return true;
+        }
+        if (hasLabelText(child, text)) return true;
+    }
+    return false;
+}
+
+class $modify(DLCommentCell, CommentCell) {
+    void loadFromComment(GJComment* comment) {
+        CommentCell::loadFromComment(comment);
+        if (!comment || comment->m_commentID < 900000000) return; // only touch our own offline comments
+        std::string name = S(comment->m_userName);
+        if (name.empty() || name == "?") return;
+        if (hasLabelText(this, name)) return;
+
+        auto label = CCLabelBMFont::create(name.c_str(), "goldFont.fnt");
+        label->setID("level-downloads-username"_spr);
+        label->setAnchorPoint({0.f, 0.5f});
+        label->limitLabelWidth(150.f, 0.55f, 0.2f);
+        label->setPosition({48.f, m_height - 13.f});
+        CCNode* parent = m_mainLayer ? static_cast<CCNode*>(m_mainLayer) : static_cast<CCNode*>(this);
+        parent->addChild(label);
+    }
+};
+
 // ---------------------------------------------------------------------------
-// Creator menu: "Level Downloads" button next to Create
+// Creator menu: the "Level Downloads" button next to Create
 // ---------------------------------------------------------------------------
 class $modify(DLCreatorLayer, CreatorLayer) {
     bool init() {
         if (!CreatorLayer::init()) return false;
 
-        // find the menu that holds the creator buttons (the one with the most buttons) - no node ids needed
+        // find the menu with the creator buttons (the one with the most buttons), no Node IDs needed
         CCMenu* menu = nullptr;
         int bestCount = 0;
         for (auto child : CCArrayExt<CCNode*>(this->getChildren())) {
@@ -888,7 +927,7 @@ class $modify(DLCreatorLayer, CreatorLayer) {
             if (count > bestCount) { bestCount = count; menu = m; }
         }
 
-        // rows of buttons: sort by height (top first), a new row starts when y drops by more than ~40% of a button
+        // find the top row: sort by height, and start a new row when the height drops by a good chunk
         std::vector<CCNode*> row;
         if (menu && bestCount >= 8) {
             std::vector<CCNode*> items;
@@ -909,7 +948,7 @@ class $modify(DLCreatorLayer, CreatorLayer) {
                     cur.push_back(items[i]);
                     i++;
                 }
-                if (cur.size() >= 4) { row = cur; break; } // first (top) row with 4+ buttons
+                if (cur.size() >= 4) { row = cur; break; } // the first row with 4 or more buttons is the top row
             }
             std::sort(row.begin(), row.end(), [](CCNode* a, CCNode* b) {
                 return a->getPositionX() < b->getPositionX();
@@ -925,16 +964,20 @@ class $modify(DLCreatorLayer, CreatorLayer) {
         dlMenu->setID("level-downloads-menu"_spr);
 
         if (menu && row.size() >= 4) {
-            // separate menu on top of the creator buttons, so the game's own layout is not changed
+            // own menu on top, so we do not mess with the game's layout
             dlMenu->setAnchorPoint(menu->getAnchorPoint());
             dlMenu->ignoreAnchorPointForPosition(menu->isIgnoreAnchorPointForPosition());
             dlMenu->setContentSize(menu->getContentSize());
             dlMenu->setPosition(menu->getPosition());
 
-            // same size as the game's buttons
+            // same size as the other buttons
             float h = row[0]->getContentHeight() * row[0]->getScaleY();
             float base = btn->getContentHeight();
-            if (base > 0.f) btn->setScale(h / base);
+            if (base > 0.f) {
+                // base scale = the size the button goes back to after you touch it
+                btn->setScale(h / base);
+                btn->m_baseScale = h / base;
+            }
 
             size_t n = row.size();
             float step = row[1]->getPositionX() - row[0]->getPositionX();
@@ -949,13 +992,14 @@ class $modify(DLCreatorLayer, CreatorLayer) {
             dlMenu->addChild(btn);
             this->addChild(dlMenu, menu->getZOrder() + 1);
         } else {
-            // could not find the row: put it in the bottom right corner
+            // could not find the row, so put the button in the bottom right corner instead
             auto ws = CCDirector::get()->getWinSize();
             dlMenu->setContentSize(ws);
             dlMenu->setAnchorPoint({0, 0});
             dlMenu->ignoreAnchorPointForPosition(false);
             dlMenu->setPosition({0, 0});
             btn->setScale(0.7f);
+            btn->m_baseScale = 0.7f;
             btn->setPosition({ws.width - 60.f, 60.f});
             dlMenu->addChild(btn);
             this->addChild(dlMenu, 10);
@@ -969,9 +1013,9 @@ class $modify(DLCreatorLayer, CreatorLayer) {
 };
 
 // ---------------------------------------------------------------------------
-// Level page: download button under like/dislike
+// Level page: the download button next to refresh
 // ---------------------------------------------------------------------------
-// the column of round buttons on the right side of the level page (found without node ids)
+// the column of round buttons on the right of the level page (found without Node IDs)
 static CCMenu* findRightMenu(CCNode* layer) {
     auto ws = CCDirector::get()->getWinSize();
     CCMenu* best = nullptr;
@@ -1003,7 +1047,7 @@ static bool itemShowsFrame(CCNode* item, char const* frameName) {
     return spr->isFrameDisplayed(frame);
 }
 
-// lives as a child of the level page, so we always know if the page is still open
+// sits on the level page, so we can tell if the page is still open
 class DLWatcher : public CCNode {
 public:
     static DLWatcher* instance;
@@ -1032,8 +1076,14 @@ class $modify(DLLevelInfoLayer, LevelInfoLayer) {
             DLWatcher::instance = watcher;
         }
         this->setupDownloadControl();
+        // the page can still move things right after it opens, so place the button again a moment later
+        this->scheduleOnce(schedule_selector(DLLevelInfoLayer::onDelayedSetup), 0.f);
+        this->scheduleOnce(schedule_selector(DLLevelInfoLayer::onDelayedSetup2), 0.3f);
         return true;
     }
+
+    void onDelayedSetup(float) { this->setupDownloadControl(); }
+    void onDelayedSetup2(float) { this->setupDownloadControl(); }
 
     bool isLevelDownloaded() {
         if (!m_level) return false;
@@ -1041,7 +1091,7 @@ class $modify(DLLevelInfoLayer, LevelInfoLayer) {
         return idIndex().count(I(m_level->m_levelID)) > 0;
     }
 
-    // download button (or the gray "downloaded" badge) right next to the refresh button
+    // the download button, or the gray badge once it is downloaded, right next to refresh
     void setupDownloadControl() {
         if (auto old = this->getChildByID("level-downloads-state"_spr)) old->removeFromParent();
 
@@ -1085,7 +1135,11 @@ class $modify(DLLevelInfoLayer, LevelInfoLayer) {
             if (!spr) return;
             auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DLLevelInfoLayer::onDownloadLevel));
             btn->setID("download-level-button"_spr);
-            if (btn->getContentHeight() > 0.f) btn->setScale(h / btn->getContentHeight());
+            if (btn->getContentHeight() > 0.f) {
+                float sc = h / btn->getContentHeight();
+                btn->setScale(sc);
+                btn->m_baseScale = sc;
+            }
             btn->setPosition(pos);
             auto m = CCMenu::create();
             m->setPosition({0, 0});
