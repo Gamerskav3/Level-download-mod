@@ -10,7 +10,7 @@
     "name": "Level Downloads",
     "version": "v1.0.0",
     "developer": "gamerskav3",
-    "description": "Download levels with their comments and play them offline.",
+    "description": "Download any level and play it offline. It also saves the 20 newest and 20 top comments, and keeps everything in your own Downloaded Levels list in the Creator menu.",
     "resources": {
         "sprites": [
             "resources/*.png"
