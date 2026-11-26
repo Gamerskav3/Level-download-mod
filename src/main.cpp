@@ -14,6 +14,7 @@
 #include <vector>
 #include <ctime>
 #include <memory>
+#include <set>
 
 using namespace geode::prelude;
 
@@ -45,6 +46,7 @@ static bool endsWith(std::string const& s, std::string const& suf) {
 struct DLComment {
     std::string user;
     std::string text;
+    int likes = 0;
 };
 
 struct DLLevel {
@@ -66,27 +68,32 @@ struct DLLevel {
 //   each comment:  'username>"comment text"'   (comments separated by ", ")
 //   inside a comment  \  '  #  }  and line breaks are escaped with a backslash
 // ---------------------------------------------------------------------------
-static std::string esc(std::string const& s) {
+// escapes: \ and ' always, line breaks as \n \r, and > in user names
+static std::string escWith(std::string const& s, bool escGt) {
     std::string o;
     for (char c : s) {
         switch (c) {
             case '\\': o += "\\\\"; break;
             case '\'': o += "\\'"; break;
-            case '#': o += "\\#"; break;
-            case '}': o += "\\}"; break;
             case '\n': o += "\\n"; break;
             case '\r': o += "\\r"; break;
+            case '>': o += escGt ? "\\>" : ">"; break;
             default: o += c;
         }
     }
     return o;
 }
 
+static char unescChar(char e) {
+    return e == 'n' ? '\n' : e == 'r' ? '\r' : e;
+}
+
+// one comment:  'LIKES" 'USERNAME>"COMMENT TEXT" '      comments are separated by ",  "
 static std::string fmtComments(std::vector<DLComment> const& v) {
     std::string o;
     for (size_t i = 0; i < v.size(); ++i) {
-        if (i) o += ", ";
-        o += "'" + esc(v[i].user) + ">\"" + esc(v[i].text) + "\"'";
+        if (i) o += ",  ";
+        o += "'" + std::to_string(v[i].likes) + "\" '" + escWith(v[i].user, true) + ">\"" + escWith(v[i].text, false) + "\" '";
     }
     return o;
 }
@@ -207,11 +214,13 @@ static bool parseGmd(std::string const& g, DLLevel& l) {
     return !l.levelString.empty();
 }
 
+// file:  {<recent comments> : <top comments> }#<gmd text>#
 static std::string buildFile(DLLevel const& l) {
-    return "{" + fmtComments(l.recent) + "#" + fmtComments(l.top) + "}#" + buildGmd(l) + "#";
+    return "{" + fmtComments(l.recent) + " : " + fmtComments(l.top) + " }#" + buildGmd(l) + "#";
 }
 
-static bool parseFile(std::string const& data, DLLevel& out) {
+// old format: {<recent>#<top>}#<gmd text>#  with 'user>"text"' comments (still readable)
+static bool parseFileOld(std::string const& data, DLLevel& out) {
     if (data.empty() || data[0] != '{') return false;
     size_t i = 1;
     auto parseList = [&](char endCh, std::vector<DLComment>& list) -> bool {
@@ -254,6 +263,67 @@ static bool parseFile(std::string const& data, DLLevel& out) {
     while (!gmd.empty() && (gmd.back() == '\n' || gmd.back() == '\r')) gmd.pop_back();
     if (!gmd.empty() && gmd.back() == '#') gmd.pop_back();
     return parseGmd(gmd, out);
+}
+
+static bool parseCommentList(std::string const& d, size_t& i, std::vector<DLComment>& out) {
+    while (i < d.size()) {
+        char c = d[i];
+        if (c == '\'') {
+            size_t j = i + 1;
+            std::string likes;
+            while (j < d.size() && ((d[j] >= '0' && d[j] <= '9') || d[j] == '-')) likes += d[j++];
+            if (j + 2 >= d.size() || d[j] != '"' || d[j + 1] != ' ' || d[j + 2] != '\'') return false;
+            j += 3;
+            std::string user;
+            while (j < d.size() && d[j] != '>') {
+                if (d[j] == '\\' && j + 1 < d.size()) { user += unescChar(d[j + 1]); j += 2; }
+                else user += d[j++];
+            }
+            if (j + 1 >= d.size() || d[j] != '>' || d[j + 1] != '"') return false;
+            j += 2;
+            std::string text;
+            bool closed = false;
+            while (j < d.size()) {
+                if (d[j] == '\\' && j + 1 < d.size()) { text += unescChar(d[j + 1]); j += 2; continue; }
+                if (d[j] == '"' && j + 2 < d.size() && d[j + 1] == ' ' && d[j + 2] == '\'') { j += 3; closed = true; break; }
+                text += d[j++];
+            }
+            if (!closed) return false;
+            DLComment cm;
+            cm.user = user;
+            cm.text = text;
+            cm.likes = atoi(likes.c_str());
+            out.push_back(std::move(cm));
+            i = j;
+            continue;
+        }
+        if (c == ':' || c == '}') return true;
+        i++; // separators: commas and spaces
+    }
+    return false;
+}
+
+static bool parseFileNew(std::string const& d, DLLevel& out) {
+    if (d.empty() || d[0] != '{') return false;
+    size_t i = 1;
+    if (!parseCommentList(d, i, out.recent)) return false;
+    if (i >= d.size() || d[i] != ':') return false;
+    i++;
+    if (!parseCommentList(d, i, out.top)) return false;
+    if (i + 1 >= d.size() || d[i] != '}' || d[i + 1] != '#') return false;
+    i += 2;
+    std::string gmd = d.substr(i);
+    while (!gmd.empty() && (gmd.back() == '\n' || gmd.back() == '\r')) gmd.pop_back();
+    if (!gmd.empty() && gmd.back() == '#') gmd.pop_back();
+    return parseGmd(gmd, out);
+}
+
+static bool parseFile(std::string const& data, DLLevel& out) {
+    DLLevel a;
+    if (parseFileNew(data, a)) { out = std::move(a); return true; }
+    DLLevel b;
+    if (parseFileOld(data, b)) { out = std::move(b); return true; }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +379,40 @@ static bool loadLevelById(int id, DLLevel& out) {
     return false;
 }
 
+// small index of downloaded level ids (index.txt) so the level page does not need to read every file
+static void writeIdIndex();
+
+static std::set<int>& idIndex() {
+    static std::set<int> ids;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        auto dir = Mod::get()->getConfigDir();
+        auto data = file::readString(dir / "index.txt");
+        if (data) {
+            std::string t = data.unwrap();
+            size_t p = 0;
+            while (p < t.size()) {
+                size_t e = t.find('\n', p);
+                if (e == std::string::npos) e = t.size();
+                int v = atoi(t.substr(p, e - p).c_str());
+                if (v) ids.insert(v);
+                p = e + 1;
+            }
+        } else {
+            for (auto& l : loadAllLevels()) ids.insert(l.id);
+            writeIdIndex();
+        }
+    }
+    return ids;
+}
+
+static void writeIdIndex() {
+    std::string t;
+    for (int id : idIndex()) t += std::to_string(id) + "\n";
+    (void)file::writeString(Mod::get()->getConfigDir() / "index.txt", t);
+}
+
 static Result<> saveLevelToDisk(DLLevel& l) {
     l.savedAt = static_cast<long long>(std::time(nullptr));
     auto dir = Mod::get()->getConfigDir();
@@ -329,13 +433,20 @@ static Result<> saveLevelToDisk(DLLevel& l) {
     for (auto& o : all) {
         if (o.id == l.id && o.path != targetStr) removeFile(o.path);
     }
-    return file::writeString(target, buildFile(l));
+    auto res = file::writeString(target, buildFile(l));
+    if (res) {
+        idIndex().insert(l.id);
+        writeIdIndex();
+    }
+    return res;
 }
 
 static void deleteLevelFromDisk(int id) {
     for (auto& o : loadAllLevels()) {
         if (o.id == id) removeFile(o.path);
     }
+    idIndex().erase(id);
+    writeIdIndex();
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +522,7 @@ static GJComment* makeComment(DLComment const& c, int levelID, int index) {
     g->m_commentString = c.text;
     g->m_commentID = 900000000 + index;
     g->m_levelID = levelID;
-    g->m_likeCount = 0;
+    g->m_likeCount = c.likes;
     g->m_hasLevelID = true;
     auto score = GJUserScore::create();
     if (score) {
@@ -452,57 +563,86 @@ class $modify(DLGameLevelManager, GameLevelManager) {
 // ---------------------------------------------------------------------------
 // downloading: level + 20 recent + 20 top comments
 // ---------------------------------------------------------------------------
+static std::string commentUser(GJComment* c) {
+    std::string u = S(c->m_userName);
+    if (u.empty() && c->m_userScore) u = S(c->m_userScore->m_userName);
+    return u.empty() ? std::string("?") : u;
+}
+
+static void refreshDownloadControl();
+
 class CommentCollector : public CCObject, public LevelCommentDelegate {
 public:
     DLLevel m_data;
-    int m_step = 0; // 0 = waiting for recent, 1 = waiting for top, 2 = done
+    int m_mode = 0; // 0 = recent, 1 = top
+    int m_page = 0;
     bool m_done = false;
 
     static CommentCollector* start(DLLevel data) {
         auto c = new CommentCollector();
         c->m_data = std::move(data);
+        c->m_data.recent.clear();
+        c->m_data.top.clear();
         c->retain();
         c->request();
         CCDirector::get()->getScheduler()->scheduleSelector(
-            schedule_selector(CommentCollector::onTimeout), c, 15.f, 0, 0.f, false
+            schedule_selector(CommentCollector::onTimeout), c, 30.f, 0, 0.f, false
         );
         return c;
     }
 
+    // pages of 10 until there are 20 comments in the list
     void request() {
         auto glm = GameLevelManager::get();
         glm->m_levelCommentDelegate = this;
-        glm->getLevelComments(m_data.id, 0, 20, m_step, CommentKeyType::Level);
+        glm->getLevelComments(m_data.id, m_page, 10, m_mode, CommentKeyType::Level);
     }
 
-    void take(CCArray* comments) {
-        auto& dst = (m_step == 0) ? m_data.recent : m_data.top;
-        dst.clear();
+    int take(CCArray* comments) {
+        auto& dst = (m_mode == 0) ? m_data.recent : m_data.top;
+        int received = 0;
         if (comments) {
             for (auto obj : CCArrayExt<CCObject*>(comments)) {
                 auto c = typeinfo_cast<GJComment*>(obj);
                 if (!c) continue;
-                dst.push_back({S(c->m_userName), S(c->m_commentString)});
-                if (dst.size() >= 20) break;
+                received++;
+                if (dst.size() < 20) {
+                    DLComment cm;
+                    cm.user = commentUser(c);
+                    cm.text = S(c->m_commentString);
+                    cm.likes = c->m_likeCount;
+                    dst.push_back(std::move(cm));
+                }
             }
         }
+        return received;
     }
 
-    void advance() {
-        m_step++;
-        if (m_step >= 2) finish(true);
-        else this->request();
+    void next(int received) {
+        auto& dst = (m_mode == 0) ? m_data.recent : m_data.top;
+        if (dst.size() < 20 && received >= 10 && m_page < 3) {
+            m_page++;
+            this->request();
+            return;
+        }
+        if (m_mode == 0) {
+            m_mode = 1;
+            m_page = 0;
+            this->request();
+        } else {
+            this->finish(true);
+        }
     }
 
     void loadCommentsFinished(CCArray* comments, char const* key) override {
         if (m_done) return;
-        take(comments);
-        advance();
+        int n = take(comments);
+        next(n);
     }
 
     void loadCommentsFailed(char const* key) override {
         if (m_done) return;
-        advance();
+        next(0);
     }
 
     void onTimeout(float) {
@@ -520,6 +660,7 @@ public:
             std::string msg = fmt::format("<cy>{}</c> was saved to <cg>Downloaded Levels</c>.", m_data.name);
             if (!commentsOk) msg += "\nSome comments could not be loaded.";
             FLAlertLayer::create("Level Downloads", msg, "OK")->show();
+            refreshDownloadControl();
         } else {
             FLAlertLayer::create("Level Downloads", "The level could not be saved.", "OK")->show();
         }
@@ -561,6 +702,25 @@ static CCNode* makeCircleButtonSprite() {
     if (auto icon = CCSprite::create("download-icon.png"_spr)) {
         float s = std::min(size.width * 0.6f / icon->getContentWidth(), size.height * 0.6f / icon->getContentHeight());
         icon->setScale(s);
+        icon->setPosition(size / 2);
+        base->addChild(icon);
+    }
+    return base;
+}
+
+// gray, not pressable "already downloaded" badge
+static CCNode* makeBadgeSprite() {
+    CCSprite* base = frameSprite("geode.loader/baseCircle_Large_Gray.png");
+    if (!base) base = frameSprite("GJ_button_06.png");
+    if (!base) {
+        base = frameSprite("geode.loader/baseCircle_Large_Green.png");
+        if (base) base->setColor({140, 140, 140});
+    }
+    if (!base) return nullptr;
+    auto size = base->getContentSize();
+    if (auto icon = CCSprite::create("download-icon-gray.png"_spr)) {
+        float sc = std::min(size.width * 0.6f / icon->getContentWidth(), size.height * 0.6f / icon->getContentHeight());
+        icon->setScale(sc);
         icon->setPosition(size / 2);
         base->addChild(icon);
     }
@@ -727,35 +887,50 @@ class $modify(DLCreatorLayer, CreatorLayer) {
             }
             if (count > bestCount) { bestCount = count; menu = m; }
         }
-        if (!menu || bestCount < 8) return true;
 
-        // top row of buttons: Create, Saved, Scores, Quests, Versus
-        float maxY = -1e9f;
-        std::vector<CCNode*> items;
-        for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
-            if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
-            items.push_back(it);
-            maxY = std::max(maxY, it->getPositionY());
-        }
+        // rows of buttons: sort by height (top first), a new row starts when y drops by more than ~40% of a button
         std::vector<CCNode*> row;
-        for (auto it : items) {
-            if (it->getPositionY() > maxY - 5.f) row.push_back(it);
+        if (menu && bestCount >= 8) {
+            std::vector<CCNode*> items;
+            for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
+                if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it) || !it->isVisible()) continue;
+                items.push_back(it);
+            }
+            std::sort(items.begin(), items.end(), [](CCNode* a, CCNode* b) {
+                return a->getPositionY() > b->getPositionY();
+            });
+            float tol = 30.f;
+            if (!items.empty()) tol = std::max(10.f, items[0]->getContentHeight() * items[0]->getScaleY() * 0.4f);
+            size_t i = 0;
+            while (i < items.size()) {
+                std::vector<CCNode*> cur;
+                float y0 = items[i]->getPositionY();
+                while (i < items.size() && y0 - items[i]->getPositionY() <= tol) {
+                    cur.push_back(items[i]);
+                    i++;
+                }
+                if (cur.size() >= 4) { row = cur; break; } // first (top) row with 4+ buttons
+            }
+            std::sort(row.begin(), row.end(), [](CCNode* a, CCNode* b) {
+                return a->getPositionX() < b->getPositionX();
+            });
         }
-        std::sort(row.begin(), row.end(), [](CCNode* a, CCNode* b) { return a->getPositionX() < b->getPositionX(); });
+        log::info("Level Downloads: creator menu buttons = {}, top row = {}", bestCount, row.size());
 
         auto spr = makeCategoryButtonSprite();
         auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DLCreatorLayer::onLevelDownloads));
         btn->setID("level-downloads-button"_spr);
 
-        // separate menu on top of the creator buttons, so the game's own layout is not changed
         auto dlMenu = CCMenu::create();
         dlMenu->setID("level-downloads-menu"_spr);
-        dlMenu->setAnchorPoint(menu->getAnchorPoint());
-        dlMenu->ignoreAnchorPointForPosition(menu->isIgnoreAnchorPointForPosition());
-        dlMenu->setContentSize(menu->getContentSize());
-        dlMenu->setPosition(menu->getPosition());
 
-        if (row.size() >= 4) {
+        if (menu && row.size() >= 4) {
+            // separate menu on top of the creator buttons, so the game's own layout is not changed
+            dlMenu->setAnchorPoint(menu->getAnchorPoint());
+            dlMenu->ignoreAnchorPointForPosition(menu->isIgnoreAnchorPointForPosition());
+            dlMenu->setContentSize(menu->getContentSize());
+            dlMenu->setPosition(menu->getPosition());
+
             // same size as the game's buttons
             float h = row[0]->getContentHeight() * row[0]->getScaleY();
             float base = btn->getContentHeight();
@@ -819,6 +994,31 @@ static CCMenu* findRightMenu(CCNode* layer) {
     return best;
 }
 
+static bool itemShowsFrame(CCNode* item, char const* frameName) {
+    auto ext = typeinfo_cast<CCMenuItemSpriteExtra*>(item);
+    if (!ext) return false;
+    auto spr = typeinfo_cast<CCSprite*>(ext->getNormalImage());
+    auto frame = CCSpriteFrameCache::get()->spriteFrameByName(frameName);
+    if (!spr || !frame) return false;
+    return spr->isFrameDisplayed(frame);
+}
+
+// lives as a child of the level page, so we always know if the page is still open
+class DLWatcher : public CCNode {
+public:
+    static DLWatcher* instance;
+    static DLWatcher* create() {
+        auto r = new DLWatcher();
+        if (r->init()) { r->autorelease(); return r; }
+        delete r;
+        return nullptr;
+    }
+    ~DLWatcher() override {
+        if (instance == this) instance = nullptr;
+    }
+};
+DLWatcher* DLWatcher::instance = nullptr;
+
 class $modify(DLLevelInfoLayer, LevelInfoLayer) {
     bool init(GJGameLevel* level, bool challenge) {
         if (!LevelInfoLayer::init(level, challenge)) return false;
@@ -826,37 +1026,73 @@ class $modify(DLLevelInfoLayer, LevelInfoLayer) {
         bool offline = level && level->getUserObject("offline"_spr);
         g_offlineLevelID = offline ? I(level->m_levelID) : 0;
 
-        auto menu = findRightMenu(this);
-        if (!menu) return true;
-        auto spr = makeCircleButtonSprite();
-        if (!spr) return true;
-        auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DLLevelInfoLayer::onDownloadLevel));
-        btn->setID("download-level-button"_spr);
-
-        if (menu->getLayout()) {
-            // the menu is laid out automatically: add at the end (= under like/dislike)
-            menu->addChild(btn);
-            menu->updateLayout();
-        } else {
-            // place it under the lowest button, with the same spacing
-            CCNode* low = nullptr;
-            for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
-                if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
-                if (!low || it->getPositionY() < low->getPositionY()) low = it;
-            }
-            CCNode* prev = nullptr;
-            for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
-                if (it == low || !typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
-                if (!prev || it->getPositionY() < prev->getPositionY()) prev = it;
-            }
-            float step = prev ? prev->getPositionY() - low->getPositionY() : 55.f;
-            if (step < 20.f) step = 55.f;
-            float lowH = low->getContentHeight() * low->getScaleY();
-            if (btn->getContentHeight() > 0.f && lowH > 0.f) btn->setScale(lowH / btn->getContentHeight());
-            btn->setPosition({low->getPositionX(), low->getPositionY() - step});
-            menu->addChild(btn);
+        if (auto watcher = DLWatcher::create()) {
+            watcher->setID("level-downloads-watcher"_spr);
+            this->addChild(watcher);
+            DLWatcher::instance = watcher;
         }
+        this->setupDownloadControl();
         return true;
+    }
+
+    bool isLevelDownloaded() {
+        if (!m_level) return false;
+        if (m_level->getUserObject("offline"_spr)) return true;
+        return idIndex().count(I(m_level->m_levelID)) > 0;
+    }
+
+    // download button (or the gray "downloaded" badge) right next to the refresh button
+    void setupDownloadControl() {
+        if (auto old = this->getChildByID("level-downloads-state"_spr)) old->removeFromParent();
+
+        auto menu = findRightMenu(this);
+        if (!menu) return;
+
+        std::vector<CCNode*> items;
+        CCNode* refresh = nullptr;
+        for (auto it : CCArrayExt<CCNode*>(menu->getChildren())) {
+            if (!typeinfo_cast<CCMenuItemSpriteExtra*>(it)) continue;
+            items.push_back(it);
+            if (!refresh && itemShowsFrame(it, "GJ_updateBtn_001.png")) refresh = it;
+        }
+        if (items.empty()) return;
+        if (!refresh) {
+            std::sort(items.begin(), items.end(), [](CCNode* a, CCNode* b) {
+                return a->getPositionY() > b->getPositionY();
+            });
+            refresh = items.size() >= 2 ? items[1] : items[0];
+        }
+
+        auto world = menu->convertToWorldSpace(refresh->getPosition());
+        auto pos = this->convertToNodeSpace(world);
+        float h = refresh->getContentHeight() * refresh->getScaleY();
+        float w = refresh->getContentWidth() * refresh->getScaleX();
+        if (h <= 0.f) h = 44.f;
+        if (w <= 0.f) w = h;
+        pos.x -= w + 6.f;
+
+        auto holder = CCNode::create();
+        holder->setID("level-downloads-state"_spr);
+
+        if (this->isLevelDownloaded()) {
+            auto badge = makeBadgeSprite();
+            if (!badge) return;
+            if (badge->getContentHeight() > 0.f) badge->setScale(h / badge->getContentHeight());
+            badge->setPosition(pos);
+            holder->addChild(badge);
+        } else {
+            auto spr = makeCircleButtonSprite();
+            if (!spr) return;
+            auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DLLevelInfoLayer::onDownloadLevel));
+            btn->setID("download-level-button"_spr);
+            if (btn->getContentHeight() > 0.f) btn->setScale(h / btn->getContentHeight());
+            btn->setPosition(pos);
+            auto m = CCMenu::create();
+            m->setPosition({0, 0});
+            m->addChild(btn);
+            holder->addChild(m);
+        }
+        this->addChild(holder, 20);
     }
 
     void onDownloadLevel(CCObject*) {
@@ -874,3 +1110,10 @@ class $modify(DLLevelInfoLayer, LevelInfoLayer) {
         Notification::create("Downloading level and comments...", NotificationIcon::Loading, 2.f)->show();
     }
 };
+
+static void refreshDownloadControl() {
+    if (!DLWatcher::instance) return;
+    if (auto layer = typeinfo_cast<LevelInfoLayer*>(DLWatcher::instance->getParent())) {
+        static_cast<DLLevelInfoLayer*>(layer)->setupDownloadControl();
+    }
+}
